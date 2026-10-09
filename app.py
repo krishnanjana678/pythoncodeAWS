@@ -1,61 +1,63 @@
-from flask import Flask,render_template,request
+import os
+import uuid
+from flask import Flask, render_template, request, redirect, url_for
 import boto3
 import pymysql
 
 app = Flask(__name__)
 
-bucket_name="student-photo-demo-gopu"
+BUCKET_NAME = "krishna-app-storage-2026"
+REGION = "ap-south-1"
 
-db=pymysql.connect(
-host="100.57.165.48",
-port="3306",
-user="admin",
-password="Admin123",
-database="studentdb"
-)
+s3 = boto3.client("s3", region_name=REGION)
 
-@app.route('/')
+def get_db_connection():
+    return pymysql.connect(
+        host=os.environ["DB_HOST"],
+        port=3306,
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ.get("DB_NAME", "studentdb"),
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+@app.route("/")
 def home():
-    return render_template('index.html')
+    return render_template("index.html")
 
-@app.route('/register',methods=['POST'])
+@app.route("/register", methods=["POST"])
 def register():
+    name = request.form["name"]
+    email = request.form["email"]
+    course = request.form["course"]
+    photo = request.files.get("photo")
 
-    name=request.form['name']
-    email=request.form['email']
-    course=request.form['course']
+    if not photo or not photo.filename:
+        return "Please select a photo.", 400
 
-    photo=request.files['photo']
+    filename = f"{uuid.uuid4().hex}_{os.path.basename(photo.filename)}"
 
-    s3=boto3.client('s3')
+    s3.upload_fileobj(photo, BUCKET_NAME, filename)
 
-    s3.upload_fileobj(
-        photo,
-        bucket_name,
-        photo.filename
+    photo_url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": BUCKET_NAME, "Key": filename},
+        ExpiresIn=3600
     )
 
-    photo_url=f"https://{bucket_name}.s3.amazonaws.com/{photo.filename}"
-
-    cursor=db.cursor()
-
-    sql="""
-    INSERT INTO students
-    (name,email,course,photo_url)
-    VALUES(%s,%s,%s,%s)
-    """
-
-    cursor.execute(
-        sql,
-        (name,email,course,photo_url)
-    )
-
-    db.commit()
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO students (name, email, course, photo_url)
+                   VALUES (%s, %s, %s, %s)""",
+                (name, email, course, photo_url)
+            )
+        connection.commit()
+    finally:
+        connection.close()
 
     return "Student Registered Successfully"
 
-if __name__=="__main__":
-    app.run(
-        host="0.0.0.0",
-        port=5000
-    )
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
